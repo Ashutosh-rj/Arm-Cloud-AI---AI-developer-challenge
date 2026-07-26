@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "inferav22-orchestrator"
+    static_configs:
+      - targets: ["orchestrator:8000"]

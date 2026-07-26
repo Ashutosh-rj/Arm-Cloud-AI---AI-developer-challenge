@@ -1,0 +1,49 @@
+# Multi-stage Dockerfile for Arm-Optimized llama.cpp Server with KleidiAI
+FROM ubuntu:24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    ca-certificates \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+RUN git clone https://github.com/ggerganov/llama.cpp.git .
+
+# Configure CMake with Arm Neoverse V2, SVE, NEON, and KleidiAI flags
+RUN cmake -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLLAMA_NATIVE=ON \
+    -DLLAMA_ARM_FP16=ON \
+    -DLLAMA_NEON=ON \
+    -DGGML_KLEIDIAI=ON \
+    -DCMAKE_CXX_FLAGS="-O3 -march=armv9-a+sve+i8mm -mtune=neoverse-v2 -ffast-math" \
+    -DCMAKE_C_FLAGS="-O3 -march=armv9-a+sve+i8mm -mtune=neoverse-v2"
+
+RUN cmake --build build --config Release -j$(nproc) --target llama-server llama-quantize
+
+# Final runtime stage
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    numactl \
+    libgomp1 \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /src/build/bin/llama-server /app/llama-server
+COPY --from=builder /src/build/bin/llama-quantize /app/llama-quantize
+COPY numa_runner.sh /app/numa_runner.sh
+
+RUN chmod +x /app/numa_runner.sh /app/llama-server /app/llama-quantize
+
+EXPOSE 8080
+
+ENTRYPOINT ["/app/numa_runner.sh"]

@@ -1,0 +1,87 @@
+services:
+  # -----------------------------------
+  # Orchestrator & API Layer
+  # -----------------------------------
+  orchestrator:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: inferav22-orchestrator:latest
+    container_name: inferav22-orchestrator
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DB_URL=postgresql://postgres:postgres@postgres:5432/inferav22
+      - HF_TOKEN=${HF_TOKEN}
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ./backend:/app
+
+  # -----------------------------------
+  # Agent Workers
+  # -----------------------------------
+  optimization-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    image: inferav22-worker:latest
+    container_name: inferav22-opt-worker
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+
+  # -----------------------------------
+  # Data Layer
+  # -----------------------------------
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: inferav22-postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=inferav22
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: inferav22-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: inferav22-qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  # -----------------------------------
+  # Frontend Dashboard
+  # -----------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: inferav22-frontend:latest
+    container_name: inferav22-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - orchestrator
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:

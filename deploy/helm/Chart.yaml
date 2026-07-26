@@ -1,0 +1,6 @@
+apiVersion: v2
+name: inferav22-inference-server
+description: Helm chart for InferaV22 Arm-optimized AI inference server
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

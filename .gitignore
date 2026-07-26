@@ -1,0 +1,160 @@
+# =============================================================================
+# InferaV22 Platform — .gitignore
+# =============================================================================
+
+# ─── Node.js & Next.js Frontend ─────────────────────────────────────────────
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+build/
+frontend/build/
+.vite/
+.next/
+frontend/.next/
+out/
+frontend/out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+*.tsbuildinfo
+
+# ─── Python Backend & Microservices ──────────────────────────────────────────
+__pycache__/
+backend/__pycache__/
+backend/*/__pycache__/
+backend/*/*/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+.venv_*/
+
+# ─── Environment & Secrets ───────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.staging
+frontend/.env
+frontend/.env.local
+# Note: .env.example files are intentionally NOT ignored as templates
+
+# ─── API Keys, Certificates & Tokens ─────────────────────────────────────────
+*.pem
+*.key
+*.cert
+*.crt
+secrets/
+credentials/
+service-account*.json
+
+# ─── Database & Local Storage ────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+*.sql.gz
+*.dump
+postgres_data/
+redis_data/
+qdrant_data/
+qdrant_storage/
+prometheus_data/
+grafana_data/
+
+# ─── ML Model Artifacts & GGUF Models ────────────────────────────────────────
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.gguf
+*.bin
+*.pkl
+*.pickle
+*.joblib
+.cache/
+models/
+checkpoints/
+
+# ─── Helm & Kubernetes Packages ──────────────────────────────────────────────
+*.tgz
+helm/*.tgz
+deploy/helm/*.tgz
+
+# ─── Docker ──────────────────────────────────────────────────────────────────
+.docker/
+docker-compose.override.yml
+
+# ─── Testing & Coverage ──────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+nosetests.xml
+test-results/
+
+# ─── Logs & Runtime ──────────────────────────────────────────────────────────
+*.log
+logs/
+*.pid
+celerybeat-schedule
+celerybeat.pid
+
+# ─── OS Generated Files ──────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ─── IDE / Editor Configurations ─────────────────────────────────────────────
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ─── Temporary & Scratch Files ───────────────────────────────────────────────
+*.bak
+*.tmp
+*.temp
+.scratch/
+tmp/
