@@ -1,0 +1,101 @@
+# InferaV22 Helm Chart Values
+# Supported clouds: graviton4 | cobalt100 | axion
+cloud: graviton4
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/your-org/inferav22/orchestrator
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: inferav22.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: inferav22-tls
+      hosts:
+        - inferav22.example.com
+
+# Per-cloud node selectors
+nodeSelectors:
+  graviton4:
+    kubernetes.io/arch: arm64
+    node.kubernetes.io/instance-type: c8g.4xlarge
+  cobalt100:
+    kubernetes.io/arch: arm64
+    kubernetes.azure.com/agentpool: cobalt100arm
+  axion:
+    kubernetes.io/arch: arm64
+    cloud.google.com/machine-family: c4a
+
+resources:
+  requests:
+    cpu: "2"
+    memory: "4Gi"
+  limits:
+    cpu: "8"
+    memory: "16Gi"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+env:
+  ENVIRONMENT: production
+  LOG_LEVEL: INFO
+  APP_VERSION: "0.1.0"
+  WORKER_CONCURRENCY: "4"
+
+# Sensitive values — inject via Kubernetes Secrets, NOT here
+# Set these using: kubectl create secret generic inferav22-secrets ...
+secrets:
+  secretName: inferav22-secrets
+  keys:
+    - DATABASE_URL
+    - REDIS_URL
+    - JWT_SECRET
+    - HF_TOKEN
+    - GRAVITON4_INFERENCE_URL
+    - COBALT100_INFERENCE_URL
+    - AXION_INFERENCE_URL
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+serviceAccount:
+  create: true
+  name: inferav22
+  annotations: {}
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  failureThreshold: 3

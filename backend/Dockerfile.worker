@@ -16,4 +16,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "-c", "import time; print('InferaV22 Background Worker Active'); time.sleep(86400)"]
+CMD ["python", "-m", "worker"]

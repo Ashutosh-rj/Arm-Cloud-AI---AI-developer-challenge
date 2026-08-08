@@ -1,34 +1,41 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Values.appName }}
+  name: {{ include "inferav22.fullname" . }}
   labels:
-    app: {{ .Values.appName }}
+    {{- include "inferav22.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
-      app: {{ .Values.appName }}
+      {{- include "inferav22.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app: {{ .Values.appName }}
+        {{- include "inferav22.selectorLabels" . | nindent 8 }}
     spec:
-      nodeSelector:
-        kubernetes.io/arch: arm64
-        node.kubernetes.io/instance-type: c8g.4xlarge
+      serviceAccountName: {{ .Values.serviceAccount.name | default (include "inferav22.fullname" .) }}
       containers:
-        - name: llamacpp-arm
+        - name: orchestrator
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
-            - containerPort: 8080
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "inferav22.fullname" . }}-config
+            - secretRef:
+                name: {{ .Values.secrets.secretName }}
+                optional: true
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
-            requests:
-              cpu: {{ .Values.resources.requests.cpu }}
-              memory: {{ .Values.resources.requests.memory }}
-            limits:
-              cpu: {{ .Values.resources.limits.cpu }}
-              memory: {{ .Values.resources.limits.memory }}
-          env:
-            {{- toYaml .Values.env | nindent 12 }}
+            {{- toYaml .Values.resources | nindent 12 }}
+      nodeSelector:
+        {{- include "inferav22.nodeSelector" . | nindent 8 }}

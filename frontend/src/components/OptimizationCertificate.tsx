@@ -23,6 +23,32 @@ interface CertificateProps {
 export const OptimizationCertificate: React.FC<CertificateProps> = ({ certificateData }) => {
   if (!certificateData) return null;
 
+  const handleDownloadHelmChart = async (runId: string) => {
+    try {
+      const authToken = typeof window !== 'undefined' ? localStorage.getItem('authToken') || '' : '';
+      const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const response = await fetch(`${API_BASE_URL}/api/v1/runs/${runId}/helm-chart`, {
+        headers: {
+          'Authorization': authToken ? `Bearer ${authToken}` : '',
+        },
+      });
+      if (!response.ok) {
+        throw new Error(`Download failed: ${response.statusText}`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `inferav22-${runId.substring(0, 8)}.tgz`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Helm chart download failed:', error);
+    }
+  };
+
   return (
     <div className="glass-panel rounded-2xl p-6 relative overflow-hidden border border-indigo-500/30 max-w-xl mx-auto my-6 shadow-2xl">
       <div className="absolute -right-12 -top-12 w-40 h-40 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
@@ -80,7 +106,10 @@ export const OptimizationCertificate: React.FC<CertificateProps> = ({ certificat
       </div>
 
       <div className="flex gap-3 pt-2">
-        <button className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition shadow-lg shadow-indigo-600/20">
+        <button 
+          onClick={() => handleDownloadHelmChart(certificateData.certification_id)}
+          className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-2.5 px-4 rounded-xl flex items-center justify-center gap-2 transition shadow-lg shadow-indigo-600/20"
+        >
           <Download className="w-4 h-4" />
           Download Helm Chart (.tgz)
         </button>

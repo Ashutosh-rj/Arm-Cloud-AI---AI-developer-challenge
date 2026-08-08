@@ -158,3 +158,10 @@ $RECYCLE.BIN/
 *.temp
 .scratch/
 tmp/
+
+# ─── Agent Workspaces & Artifacts ────────────────────────────────────────────
+.gemini/
+.antigravity/
+walkthrough.md
+implementation_plan.md
+task.md

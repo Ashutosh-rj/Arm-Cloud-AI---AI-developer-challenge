@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS optimization_runs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id UUID REFERENCES organizations(id),
     model_url TEXT NOT NULL,
-    model_hash TEXT NOT NULL,
+    model_hash TEXT,
     status TEXT NOT NULL CHECK (status IN ('queued','running','completed','failed','rolled_back')),
     sla_spec JSONB NOT NULL,
     target_clouds TEXT[] NOT NULL,
@@ -38,7 +38,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_events_run_id ON agent_events(run_id, creat
 
 -- 4. Benchmark results
 CREATE TABLE IF NOT EXISTS benchmark_results (
-    id UUID NOT NULL DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     run_id UUID NOT NULL REFERENCES optimization_runs(id),
     cloud TEXT NOT NULL,
     quant_level TEXT NOT NULL,
@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS certificates (
     signature TEXT NOT NULL,
     pdf_url TEXT,
     public_url TEXT,
+    payload JSONB,
     issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '1 year')
 );
@@ -95,3 +96,30 @@ CREATE TABLE IF NOT EXISTS arm_topology_profiles (
     profiled_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (instance_type, cloud)
 );
+
+-- Users and authentication
+CREATE TABLE IF NOT EXISTS users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email TEXT UNIQUE NOT NULL,
+    hashed_password TEXT NOT NULL,
+    org_id UUID REFERENCES organizations(id) ON DELETE SET NULL,
+    role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'member', 'viewer')),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key_hash TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    last_used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_org_id ON users(org_id);
+

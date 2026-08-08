@@ -8,11 +8,12 @@ services:
       dockerfile: Dockerfile
     image: inferav22-orchestrator:latest
     container_name: inferav22-orchestrator
+    env_file: .env
     ports:
       - "8000:8000"
     environment:
-      - REDIS_URL=redis://redis:6379
-      - DB_URL=postgresql://postgres:postgres@postgres:5432/inferav22
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - DB_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - HF_TOKEN=${HF_TOKEN}
     depends_on:
       - redis
@@ -29,8 +30,9 @@ services:
       dockerfile: Dockerfile.worker
     image: inferav22-worker:latest
     container_name: inferav22-opt-worker
+    env_file: .env
     environment:
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
     depends_on:
       - redis
 
@@ -40,10 +42,11 @@ services:
   postgres:
     image: timescale/timescaledb:latest-pg16
     container_name: inferav22-postgres
+    env_file: .env
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=inferav22
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
@@ -74,6 +77,7 @@ services:
       dockerfile: Dockerfile
     image: inferav22-frontend:latest
     container_name: inferav22-frontend
+    env_file: .env
     ports:
       - "3000:3000"
     environment:

@@ -18,12 +18,36 @@ export default function CommandCenter() {
   const [certificate, setCertificate] = useState<CertificateData | null>(null);
   const [tpsHistory, setTpsHistory] = useState<any[]>([]);
   const [dailyTokens, setDailyTokens] = useState<number>(100); // Millions of tokens per day
+  const [tpsGain, setTpsGain] = useState<string | null>(null);
+  const [costDrop, setCostDrop] = useState<string | null>(null);
+  const [qualityDelta, setQualityDelta] = useState<string | null>(null);
+  const [cloudPricing, setCloudPricing] = useState<any>({ x86_cost_per_1m: 2.84, arm_cost_per_1m: 0.51, x86_tps_baseline: 22 });
+
+  useEffect(() => {
+    const fetchPricing = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/v1/analytics?cloud=${targetCloud}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.pricing) {
+            setCloudPricing((prev: any) => ({ ...prev, ...data.pricing }));
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to fetch pricing:', err);
+      }
+    };
+    fetchPricing();
+  }, [targetCloud]);
 
   const handleStartRun = async () => {
     setIsRunning(true);
     setCertificate(null);
     setCurrentPhase('planning');
     setTpsHistory([]);
+    setTpsGain(null);
+    setCostDrop(null);
+    setQualityDelta(null);
 
     try {
       const res = await fetch(`${API_BASE}/api/v1/optimize`, {
@@ -42,8 +66,9 @@ export default function CommandCenter() {
         connectWebSocket(data.run_id);
       }
     } catch (err) {
-      console.warn('Backend API offline, utilizing fallback dynamic client simulation:', err);
-      simulateDynamicPipeline();
+      console.error('Backend API offline or failed to start run:', err);
+      setIsRunning(false);
+      setCurrentPhase('error');
     }
   };
 
@@ -60,64 +85,57 @@ export default function CommandCenter() {
         }
         if (msg.state.benchmark_results && msg.state.benchmark_results.length > 0) {
           const res = msg.state.benchmark_results[0];
-          setTpsHistory(prev => [
-            ...prev,
-            { time: `${prev.length * 4}s`, x86_xeon: 22, graviton4_spec: res.tps_p50 || 89.4 }
-          ]);
+          
+          setTpsHistory(prev => {
+            // TODO: Replace with real x86 baseline from /api/v1/analytics when available
+            const x86Baseline = cloudPricing?.x86_tps_baseline || 22;
+            return [
+              ...prev,
+              { time: `${prev.length * 4}s`, x86_xeon: x86Baseline, graviton4_spec: res.tps_p50 || 89.4 }
+            ];
+          });
+
+          if (res.tps_p50 && res.x86_baseline_tps) {
+             const gain = ((res.tps_p50 - res.x86_baseline_tps) / res.x86_baseline_tps * 100);
+             setTpsGain(`+${gain.toFixed(0)}% TPS`);
+          }
+          if (res.cost_per_1m_tokens_usd && res.x86_baseline_cost) {
+             const drop = ((res.x86_baseline_cost - res.cost_per_1m_tokens_usd) / res.x86_baseline_cost * 100);
+             setCostDrop(`-${drop.toFixed(0)}% USD`);
+          }
+        }
+        if (msg.state.quality_reports && msg.state.quality_reports.length > 0) {
+          const qRes = msg.state.quality_reports[0];
+          if (qRes.score_delta !== undefined) {
+             setQualityDelta(`${qRes.score_delta > 0 ? '+' : ''}${qRes.score_delta.toFixed(3)} (${qRes.passed ? 'PASS' : 'FAIL'})`);
+          }
         }
       }
     };
 
     ws.onerror = () => {
-      simulateDynamicPipeline();
+      console.error('WebSocket error. Connection to agent swarm lost.');
+      setIsRunning(false);
+      setCurrentPhase('error');
     };
   };
 
-  const simulateDynamicPipeline = () => {
-    const phases = [
-      'planning', 'profiling', 'optimizing', 'qualifying',
-      'benchmarking', 'speculative', 'deploying', 'verifying', 'certifying', 'completed'
-    ];
-
-    let step = 0;
-    const interval = setInterval(() => {
-      if (step < phases.length) {
-        const p = phases[step];
-        setCurrentPhase(p);
-        
-        setTpsHistory(prev => [
-          ...prev,
-          {
-            time: `${step * 3}s`,
-            x86_xeon: 22,
-            graviton4_spec: Math.min(89.4, 30 + step * 7)
-          }
-        ]);
-
-        step++;
-      } else {
-        clearInterval(interval);
-        setIsRunning(false);
-        setCertificate({
-          inferav22_version: '1.0.0',
-          tagline: 'Every Version. Faster. Smarter. Optimized.',
-          certification_id: `cert-${Math.random().toString(36).substring(2, 10)}`,
-          model: modelUrl,
-          score: 94,
-          signature: `sha256:${Array.from({length: 64}, () => Math.floor(Math.random()*16).toString(16)).join('')}`,
-          public_url: 'https://verify.inferav22.dev'
-        });
-      }
-    }, 1100);
-  };
-
-  const calculatedMonthlySavings = ((2.84 - 0.51) * dailyTokens * 30).toLocaleString('en-US', {
+  const calculatedMonthlySavings = ((cloudPricing.x86_cost_per_1m - cloudPricing.arm_cost_per_1m) * dailyTokens * 30).toLocaleString('en-US', {
     maximumFractionDigits: 0
   });
 
   return (
     <main className="min-h-screen p-6 space-y-6 max-w-[1600px] mx-auto text-gray-100">
       {/* Top Header */}
+      <div
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+        style={{ position: 'absolute', width: '1px', height: '1px', padding: 0, margin: '-1px', overflow: 'hidden', clip: 'rect(0,0,0,0)', border: 0 }}
+      >
+        {isRunning ? `Optimization in progress: ${currentPhase || 'initializing'} phase` : 
+         certificate ? 'Optimization complete. Results available.' : ''}
+      </div>
       <header className="flex justify-between items-center glass-panel p-4 rounded-2xl border border-white/10 shadow-xl">
         <div className="flex items-center gap-3">
           <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-indigo-500 to-red-600 flex items-center justify-center text-white font-black text-2xl shadow-lg">
@@ -153,8 +171,9 @@ export default function CommandCenter() {
       {/* Model Optimization Trigger Form */}
       <section className="glass-panel p-5 rounded-2xl flex flex-wrap gap-4 items-center justify-between border border-white/10">
         <div className="flex-1 min-w-[320px]">
-          <label className="text-xs font-medium text-gray-400 block mb-1">HuggingFace Model / GGUF URL</label>
+          <label htmlFor="model-url" className="text-xs font-medium text-gray-400 block mb-1">HuggingFace Model / GGUF URL</label>
           <input
+            id="model-url"
             type="text"
             value={modelUrl}
             onChange={(e) => setModelUrl(e.target.value)}
@@ -163,8 +182,9 @@ export default function CommandCenter() {
         </div>
 
         <div className="w-56">
-          <label className="text-xs font-medium text-gray-400 block mb-1">Target Cloud Target</label>
+          <label htmlFor="target-cloud" className="text-xs font-medium text-gray-400 block mb-1">Target Cloud Target</label>
           <select
+            id="target-cloud"
             value={targetCloud}
             onChange={(e) => setTargetCloud(e.target.value)}
             className="w-full bg-black/50 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white font-mono focus:outline-none focus:border-indigo-500"
@@ -186,7 +206,9 @@ export default function CommandCenter() {
       </section>
 
       {/* Dynamic Agent Graph Visualization */}
-      <AgentGraph currentPhase={currentPhase} />
+      <div className="w-full overflow-x-auto" role="region" aria-label="Agent execution pipeline">
+        <AgentGraph currentPhase={currentPhase} />
+      </div>
 
       {/* Live Benchmark & TPS Comparison */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -211,7 +233,7 @@ export default function CommandCenter() {
 
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={tpsHistory.length > 0 ? tpsHistory : [{ time: '0s', x86_xeon: 22, graviton4_spec: 22 }]}>
+              <LineChart data={tpsHistory.length > 0 ? tpsHistory : [{ time: '0s', x86_xeon: cloudPricing?.x86_tps_baseline || 22, graviton4_spec: cloudPricing?.x86_tps_baseline || 22 }]}>
                 <XAxis dataKey="time" stroke="#4B5563" />
                 <YAxis stroke="#4B5563" />
                 <Tooltip contentStyle={{ background: '#12121A', borderColor: 'rgba(255,255,255,0.1)' }} />
@@ -233,15 +255,15 @@ export default function CommandCenter() {
             <div className="space-y-3">
               <div className="bg-black/30 p-3 rounded-xl border border-white/5 flex justify-between items-center">
                 <span className="text-xs text-gray-400">Throughput Gain</span>
-                <span className="text-lg font-black text-emerald-400 font-mono">+372% TPS</span>
+                <span className="text-lg font-black text-emerald-400 font-mono">{tpsGain || '—'}</span>
               </div>
               <div className="bg-black/30 p-3 rounded-xl border border-white/5 flex justify-between items-center">
                 <span className="text-xs text-gray-400">Inference Cost Drop</span>
-                <span className="text-lg font-black text-indigo-400 font-mono">-82% USD</span>
+                <span className="text-lg font-black text-indigo-400 font-mono">{costDrop || '—'}</span>
               </div>
               <div className="bg-black/30 p-3 rounded-xl border border-white/5 flex justify-between items-center">
                 <span className="text-xs text-gray-400">MMLU Quality Delta</span>
-                <span className="text-sm font-bold text-gray-200 font-mono">-0.003 (PASS)</span>
+                <span className="text-sm font-bold text-gray-200 font-mono">{qualityDelta || '—'}</span>
               </div>
             </div>
           </div>
@@ -288,11 +310,11 @@ export default function CommandCenter() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 font-mono text-center">
           <div className="bg-black/30 p-4 rounded-xl border border-white/5">
             <div className="text-xs text-gray-400 mb-1">x86 Baseline Cost / Mo</div>
-            <div className="text-xl font-bold text-red-400">${(2.84 * dailyTokens * 30).toLocaleString()}</div>
+            <div className="text-xl font-bold text-red-400">${(cloudPricing.x86_cost_per_1m * dailyTokens * 30).toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
           </div>
           <div className="bg-black/30 p-4 rounded-xl border border-white/5">
             <div className="text-xs text-gray-400 mb-1">InferaV22 Arm Cost / Mo</div>
-            <div className="text-xl font-bold text-emerald-400">${(0.51 * dailyTokens * 30).toLocaleString()}</div>
+            <div className="text-xl font-bold text-emerald-400">${(cloudPricing.arm_cost_per_1m * dailyTokens * 30).toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
           </div>
           <div className="bg-indigo-950/40 p-4 rounded-xl border border-indigo-500/30">
             <div className="text-xs text-indigo-300 mb-1">Projected Monthly Savings</div>
@@ -300,6 +322,9 @@ export default function CommandCenter() {
               ${calculatedMonthlySavings} / mo
             </div>
           </div>
+        </div>
+        <div className="text-[10px] text-gray-500 text-center mt-2">
+          *Pricing estimates based on on-demand instance rates. Actual savings may vary.
         </div>
       </section>
 

@@ -1,231 +1,143 @@
-import uuid
+"""
+InferaV22 — Arm Cloud AI Inference Optimization Platform
+FastAPI application factory.
+"""
 import logging
-from typing import Dict, Any, List
-from fastapi import FastAPI, BackgroundTasks, HTTPException, WebSocket, WebSocketDisconnect
+import os
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from core.config import settings
-from core.state import SLASpec
-from agents.graph import app_graph
-from services.certificate_service import CertificateService
-from services.semantic_cache import SemanticCacheManager
+from core.logging_config import configure_logging
+from core.metrics import metrics_asgi_app, api_requests_total, api_request_duration_seconds
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("inferav22-api")
+configure_logging()
+logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan — startup and shutdown."""
+    logger.info("InferaV22 starting up...")
+    # Initialize database pool
+    try:
+        from db.connection import get_pool
+        await get_pool()
+        logger.info("PostgreSQL pool ready")
+    except Exception as e:
+        logger.warning(f"PostgreSQL unavailable at startup: {e}")
+
+    # Initialize Redis
+    try:
+        from cache.redis_client import get_redis
+        redis = await get_redis()
+        await redis.ping()
+        logger.info("Redis ready")
+    except Exception as e:
+        logger.warning(f"Redis unavailable at startup: {e}")
+
+    logger.info(f"InferaV22 started | env={settings.ENVIRONMENT} | version={settings.APP_VERSION}")
+    yield
+
+    # Shutdown
+    logger.info("InferaV22 shutting down...")
+    try:
+        from db.connection import close_pool
+        await close_pool()
+    except Exception:
+        pass
+    try:
+        from cache.redis_client import close_redis
+        await close_redis()
+    except Exception:
+        pass
+    logger.info("Shutdown complete")
+
+
+# Rate limiter
+limiter = Limiter(key_func=get_remote_address)
+
+# Create app
 app = FastAPI(
-    title=settings.API_TITLE,
-    description=f"{settings.TAGLINE} — Autonomous AI Inference Optimization Platform for Arm Cloud",
-    version=settings.API_VERSION
+    title="InferaV22 — Arm Cloud AI Inference Optimizer",
+    description="Autonomous LLM inference optimization pipeline for Arm Neoverse (Graviton4, Cobalt 100, Axion)",
+    version=settings.APP_VERSION,
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+# CORS — explicit origins only, never wildcard
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
 )
 
-# Store for run states (in production backed by Redis & PostgreSQL)
-runs_db: Dict[str, Dict[str, Any]] = {}
-active_connections: Dict[str, List[WebSocket]] = {}
+# Mount Prometheus metrics endpoint
+app.mount("/metrics", metrics_asgi_app)
 
-# Pre-populate sample run for instant UI demo & certificate lookup
-sample_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-sample_cert = CertificateService.generate_certificate(
-    run_id=sample_id,
-    model_url=settings.DEFAULT_MODEL_URL,
-    optimal_config={
-        "quantization": "INT4 (Q4_K_M)",
-        "threads": 48,
-        "hugepages": True,
-        "kleidiAI": True,
-        "numa_strategy": "distribute",
-        "speculative_draft": "Llama-3.2-1B"
-    },
-    benchmarks={
-        "ttft_p50_ms": 142.0,
-        "ttft_p99_ms": 287.0,
-        "tps_p50": 89.4,
-        "memory_gb": 2.1,
-        "cost_per_1m_tokens_usd": settings.GRAVITON4_HOURLY_COST
-    },
-    quality_delta={"score_baseline": 0.721, "score_optimized": 0.718, "score_delta": -0.003, "gate": "PASS"}
-)
+# Include API routers
+from api.runs import router as runs_router
+from api.certificates import router as certificates_router
+from api.analytics import router as analytics_router
+from api.ws import router as ws_router
 
-runs_db[sample_id] = {
-    "run_id": sample_id,
-    "model_url": settings.DEFAULT_MODEL_URL,
-    "target_clouds": ["graviton4", "cobalt100", "axion"],
-    "phase": "completed",
-    "current_quant_level": "int4",
-    "quality_gate_passed": True,
-    "human_approval_required": False,
-    "human_approved": True,
-    "status": "COMPLETED",
-    "certificate": sample_cert,
-    "benchmark_results": [
-        {"cloud": "graviton4", "quant_level": "INT4", "tps_p50": 89.4, "ttft_p99_ms": 287.0, "memory_gb": 2.1, "cost_per_1m_tokens_usd": settings.GRAVITON4_HOURLY_COST},
-        {"cloud": "cobalt100", "quant_level": "INT4", "tps_p50": 31.2, "ttft_p99_ms": 320.0, "memory_gb": 2.4, "cost_per_1m_tokens_usd": settings.COBALT100_HOURLY_COST},
-        {"cloud": "axion", "quant_level": "INT4", "tps_p50": 36.9, "ttft_p99_ms": 295.0, "memory_gb": 2.2, "cost_per_1m_tokens_usd": settings.AXION_HOURLY_COST}
-    ],
-    "quality_reports": [
-        {"quant_level": "INT4", "eval_dataset": "MMLU", "score_baseline": 0.721, "score_optimized": 0.718, "score_delta": -0.003, "gate_passed": True}
-    ],
-    "topology": {
-        "graviton4": {"cloud": "graviton4", "sve_width_bits": 256, "numa_nodes": 2, "kleidi_ai_supported": True},
-        "cobalt100": {"cloud": "cobalt100", "sve_width_bits": 128, "numa_nodes": 1, "kleidi_ai_supported": True},
-        "axion": {"cloud": "axion", "sve_width_bits": 256, "numa_nodes": 1, "kleidi_ai_supported": True}
-    },
-    "errors": [],
-    "error_count": 0
-}
+app.include_router(runs_router)
+app.include_router(certificates_router)
+app.include_router(analytics_router)
+app.include_router(ws_router)
 
-class OptimizeRequest(BaseModel):
-    model_url: str = Field(default=settings.DEFAULT_MODEL_URL, example=settings.DEFAULT_MODEL_URL)
-    target_clouds: List[str] = Field(default=["graviton4", "cobalt100", "axion"], example=["graviton4", "cobalt100", "axion"])
-    sla_spec: SLASpec = Field(default_factory=SLASpec)
-    quality_floor: float = Field(default=settings.DEFAULT_QUALITY_FLOOR, ge=0.8, le=1.0)
+# ── Health Check ──────────────────────────────────────────────────────────────
+@app.get("/health", tags=["Health"])
+async def health_check():
+    """Liveness probe. Checks connectivity to all backing services."""
+    from db.connection import health_check as db_health
+    from cache.redis_client import health_check as redis_health
 
-async def notify_websockets(run_id: str, payload: Dict[str, Any]):
-    if run_id in active_connections:
-        for ws in active_connections[run_id]:
-            try:
-                await ws.send_json(payload)
-            except Exception as e:
-                logger.error(f"WebSocket send error: {e}")
-
-async def run_optimization_workflow(run_id: str, initial_state: Dict[str, Any]):
-    logger.info(f"Starting LangGraph workflow for run {run_id}")
+    db_ok = False
+    redis_ok = False
     try:
-        async for output in app_graph.astream(initial_state):
-            for node_name, node_state in output.items():
-                logger.info(f"[{run_id}] Step completed: {node_name}")
-                runs_db[run_id].update(node_state)
-                await notify_websockets(run_id, {
-                    "event": "node_complete",
-                    "node": node_name,
-                    "state": runs_db[run_id]
-                })
-        runs_db[run_id]["status"] = "COMPLETED"
-        await notify_websockets(run_id, {"event": "run_completed", "state": runs_db[run_id]})
-    except Exception as e:
-        logger.error(f"Workflow execution failed for {run_id}: {e}")
-        runs_db[run_id]["status"] = "FAILED"
-        runs_db[run_id]["errors"].append(str(e))
-        await notify_websockets(run_id, {"event": "run_failed", "error": str(e)})
-
-@app.get("/health")
-def health_check():
-    return {
-        "status": "healthy",
-        "service": settings.API_TITLE,
-        "tagline": settings.TAGLINE
-    }
-
-@app.post("/api/v1/optimize", status_code=202)
-async def start_optimization(req: OptimizeRequest, background_tasks: BackgroundTasks):
-    run_id = str(uuid.uuid4())
-    initial_state = {
-        "run_id": run_id,
-        "model_url": req.model_url,
-        "sla_spec": req.sla_spec.model_dump(),
-        "target_clouds": req.target_clouds,
-        "quality_floor": req.quality_floor,
-        "phase": "planning",
-        "current_quant_level": "fp16",
-        "quality_gate_passed": False,
-        "human_approval_required": False,
-        "human_approved": False,
-        "plan": None,
-        "topology": {},
-        "benchmark_results": [],
-        "quality_reports": [],
-        "speculative_config": None,
-        "deployment": None,
-        "verification": None,
-        "certificate": None,
-        "errors": [],
-        "error_count": 0,
-        "status": "RUNNING"
-    }
-
-    runs_db[run_id] = initial_state
-    background_tasks.add_task(run_optimization_workflow, run_id, initial_state)
-
-    return {
-        "run_id": run_id,
-        "status": "QUEUED",
-        "message": "Optimization run started asynchronously",
-        "websocket_url": f"/ws/{run_id}"
-    }
-
-@app.get("/api/v1/runs/{run_id}")
-async def get_run_status(run_id: str):
-    if run_id not in runs_db:
-        raise HTTPException(status_code=404, detail="Run ID not found")
-    return runs_db[run_id]
-
-@app.get("/api/v1/certificates/{cert_id}")
-async def get_certificate(cert_id: str):
-    for run in runs_db.values():
-        if run.get("certificate") and run["certificate"].get("certification_id") == cert_id:
-            return run["certificate"]
-    raise HTTPException(status_code=404, detail="Certificate not found")
-
-@app.get("/api/v1/certificates/{cert_id}/verify")
-async def verify_certificate_endpoint(cert_id: str):
-    for run in runs_db.values():
-        if run.get("certificate") and run["certificate"].get("certification_id") == cert_id:
-            is_valid, msg = CertificateService.verify_certificate(run["certificate"])
-            return {
-                "certification_id": cert_id,
-                "is_valid": is_valid,
-                "verification_message": msg,
-                "signature": run["certificate"].get("signature")
-            }
-    raise HTTPException(status_code=404, detail="Certificate not found for verification")
-
-@app.get("/api/v1/models")
-async def list_models():
-    models_list = []
-    for run_id, run in runs_db.items():
-        if run.get("status") == "COMPLETED":
-            models_list.append({
-                "model_url": run.get("model_url"),
-                "latest_run_id": run_id,
-                "best_quantization": run.get("current_quant_level", "int4").upper(),
-                "status": "OPTIMIZED"
-            })
-    return {"models": models_list}
-
-@app.get("/api/v1/analytics")
-async def get_analytics():
-    return {
-        "total_optimization_runs": len(runs_db),
-        "graviton4_cost": settings.GRAVITON4_HOURLY_COST,
-        "x86_xeon_cost": settings.X86_XEON_HOURLY_COST,
-        "arm_vs_x86_tps_ratio": "2.1x better TPS at 43% lower cost"
-    }
-
-@app.get("/api/v1/cache/stats")
-async def get_cache_stats():
-    return SemanticCacheManager.get_cache_stats()
-
-@app.websocket("/ws/{run_id}")
-async def websocket_endpoint(websocket: WebSocket, run_id: str):
-    await websocket.accept()
-    if run_id not in active_connections:
-        active_connections[run_id] = []
-    active_connections[run_id].append(websocket)
+        db_ok = await db_health()
+    except Exception:
+        pass
     try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        active_connections[run_id].remove(websocket)
+        redis_ok = await redis_health()
+    except Exception:
+        pass
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)
+    overall = db_ok and redis_ok
+    return JSONResponse(
+        status_code=status.HTTP_200_OK if overall else status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={
+            "status": "healthy" if overall else "degraded",
+            "services": {
+                "postgresql": "ok" if db_ok else "unavailable",
+                "redis": "ok" if redis_ok else "unavailable",
+            },
+            "version": settings.APP_VERSION,
+            "environment": settings.ENVIRONMENT,
+        }
+    )
+
+
+@app.get("/", tags=["Root"])
+async def root():
+    return {
+        "service": "InferaV22",
+        "version": settings.APP_VERSION,
+        "docs": "/docs",
+        "health": "/health",
+        "metrics": "/metrics",
+    }

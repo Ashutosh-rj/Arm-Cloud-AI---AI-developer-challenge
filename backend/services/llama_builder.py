@@ -39,17 +39,15 @@ class LlamaArmBuilder:
         """
         quant_bin = os.path.join(self.llamacpp_dir, "build", "bin", "llama-quantize")
         
-        # Fallback to simulated mode if running outside Arm server environment
         if not os.path.exists(quant_bin):
-            logger.warning(f"llama-quantize binary not found at {quant_bin}. Operating in dry-run mode.")
-            return {
-                "status": "SIMULATED",
-                "input_model": input_gguf,
-                "output_model": output_gguf,
-                "quant_level": target_quant,
-                "size_reduction_pct": 70.3,
-                "message": "Quantization parameters generated successfully (Arm Q4_K_M tuned)"
-            }
+            raise RuntimeError(
+                f"llama-quantize binary not found at '{quant_bin}'. "
+                f"To run real quantization: "
+                f"1) Build llama.cpp on an Arm64 Linux machine using deploy/Dockerfile.llamacpp-arm, "
+                f"2) Set LLAMACPP_DIR environment variable to the build directory, "
+                f"3) Ensure the 'llama-quantize' binary is at {{LLAMACPP_DIR}}/build/bin/llama-quantize. "
+                f"Current LLAMACPP_DIR: {self.llamacpp_dir}"
+            )
 
         cmd = [quant_bin, input_gguf, output_gguf, target_quant]
         logger.info(f"Executing quantization: {' '.join(cmd)}")
@@ -58,11 +56,19 @@ class LlamaArmBuilder:
         if res.returncode != 0:
             raise RuntimeError(f"Quantization failed: {res.stderr}")
 
+        if os.path.exists(output_gguf):
+            input_size = os.path.getsize(input_gguf)
+            output_size = os.path.getsize(output_gguf)
+            size_reduction_pct = round((1 - output_size / input_size) * 100, 1) if input_size > 0 else 0.0
+        else:
+            raise RuntimeError(f"Quantization completed but output file not found at {output_gguf}")
+
         return {
             "status": "SUCCESS",
             "input_model": input_gguf,
             "output_model": output_gguf,
             "quant_level": target_quant,
+            "size_reduction_pct": size_reduction_pct,
             "log": res.stdout
         }
 
