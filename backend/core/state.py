@@ -116,6 +116,7 @@ class InferaV22State(TypedDict):
 
     # Observability & Log Tracking
     logs: List[Dict[str, Any]]
+    agent_reasoning: List[str]
 
     # Error handling
     errors: List[str]

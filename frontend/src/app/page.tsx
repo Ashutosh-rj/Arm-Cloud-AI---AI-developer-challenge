@@ -3,13 +3,15 @@
 import React, { useState, useEffect } from 'react';
 import { AgentGraph } from '../components/AgentGraph';
 import { OptimizationCertificate, CertificateData } from '../components/OptimizationCertificate';
-import { Play, Zap, BarChart3, Cpu, ShieldCheck, DollarSign, Activity } from 'lucide-react';
+import { Play, Zap, BarChart3, Cpu, ShieldCheck, DollarSign, Activity, LogOut } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-const WS_BASE = process.env.NEXT_PUBLIC_WS_URL || API_BASE.replace(/^http/, 'ws');
+import { useAuth } from '../contexts/AuthContext';
+import { LoginScreen } from '../components/LoginScreen';
+import { apiClient, WS_BASE } from '../lib/apiClient';
 
 export default function CommandCenter() {
+  const { isAuthenticated, token, logout } = useAuth();
+  
   const [modelUrl, setModelUrl] = useState('meta-llama/Llama-3.2-3B-Instruct');
   const [targetCloud, setTargetCloud] = useState('graviton4');
   const [isRunning, setIsRunning] = useState(false);
@@ -21,24 +23,22 @@ export default function CommandCenter() {
   const [tpsGain, setTpsGain] = useState<string | null>(null);
   const [costDrop, setCostDrop] = useState<string | null>(null);
   const [qualityDelta, setQualityDelta] = useState<string | null>(null);
-  const [cloudPricing, setCloudPricing] = useState<any>({ x86_cost_per_1m: 2.84, arm_cost_per_1m: 0.51, x86_tps_baseline: 22 });
+  const [cloudPricing, setCloudPricing] = useState<any>({ x86_cost_per_1m: null, arm_cost_per_1m: null, x86_tps_baseline: null });
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     const fetchPricing = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/v1/analytics?cloud=${targetCloud}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.pricing) {
-            setCloudPricing((prev: any) => ({ ...prev, ...data.pricing }));
-          }
+        const data = await apiClient(`/api/v1/analytics?cloud=${targetCloud}`);
+        if (data && data.pricing) {
+          setCloudPricing((prev: any) => ({ ...prev, ...data.pricing }));
         }
       } catch (err) {
         console.warn('Failed to fetch pricing:', err);
       }
     };
     fetchPricing();
-  }, [targetCloud]);
+  }, [targetCloud, isAuthenticated]);
 
   const handleStartRun = async () => {
     setIsRunning(true);
@@ -50,9 +50,8 @@ export default function CommandCenter() {
     setQualityDelta(null);
 
     try {
-      const res = await fetch(`${API_BASE}/api/v1/optimize`, {
+      const data = await apiClient('/api/v1/optimize', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model_url: modelUrl,
           target_clouds: ['graviton4', 'cobalt100', 'axion'],
@@ -60,8 +59,7 @@ export default function CommandCenter() {
         }),
       });
 
-      const data = await res.json();
-      if (data.run_id) {
+      if (data && data.run_id) {
         setRunId(data.run_id);
         connectWebSocket(data.run_id);
       }
@@ -73,42 +71,46 @@ export default function CommandCenter() {
   };
 
   const connectWebSocket = (id: string) => {
-    const ws = new WebSocket(`${WS_BASE}/ws/${id}`);
+    const wsUrl = `${WS_BASE}/ws/${id}?token=${token}`;
+    const ws = new WebSocket(wsUrl);
 
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
-      if (msg.state) {
-        if (msg.state.phase) setCurrentPhase(msg.state.phase);
-        if (msg.state.certificate) {
-          setCertificate(msg.state.certificate);
-          setIsRunning(false);
-        }
-        if (msg.state.benchmark_results && msg.state.benchmark_results.length > 0) {
-          const res = msg.state.benchmark_results[0];
-          
-          setTpsHistory(prev => {
-            // TODO: Replace with real x86 baseline from /api/v1/analytics when available
-            const x86Baseline = cloudPricing?.x86_tps_baseline || 22;
-            return [
-              ...prev,
-              { time: `${prev.length * 4}s`, x86_xeon: x86Baseline, graviton4_spec: res.tps_p50 || 89.4 }
-            ];
-          });
+      
+      // Update phase from canonical event schema
+      if (msg.phase) setCurrentPhase(msg.phase);
+      
+      if (msg.data?.certificate) {
+        setCertificate(msg.data.certificate);
+        setIsRunning(false);
+      }
+      
+      if (msg.data?.benchmark_results && msg.data.benchmark_results.length > 0) {
+        const res = msg.data.benchmark_results[0];
+        
+        setTpsHistory(prev => {
+          const x86Baseline = cloudPricing?.x86_tps_baseline;
+          const currentTps = res.tps_p50;
+          return [
+            ...prev,
+            { time: `${prev.length * 4}s`, x86_xeon: x86Baseline, graviton4_spec: currentTps }
+          ];
+        });
 
-          if (res.tps_p50 && res.x86_baseline_tps) {
-             const gain = ((res.tps_p50 - res.x86_baseline_tps) / res.x86_baseline_tps * 100);
-             setTpsGain(`+${gain.toFixed(0)}% TPS`);
-          }
-          if (res.cost_per_1m_tokens_usd && res.x86_baseline_cost) {
-             const drop = ((res.x86_baseline_cost - res.cost_per_1m_tokens_usd) / res.x86_baseline_cost * 100);
-             setCostDrop(`-${drop.toFixed(0)}% USD`);
-          }
+        if (res.tps_p50 && res.x86_baseline_tps) {
+           const gain = ((res.tps_p50 - res.x86_baseline_tps) / res.x86_baseline_tps * 100);
+           setTpsGain(`+${gain.toFixed(0)}% TPS`);
         }
-        if (msg.state.quality_reports && msg.state.quality_reports.length > 0) {
-          const qRes = msg.state.quality_reports[0];
-          if (qRes.score_delta !== undefined) {
-             setQualityDelta(`${qRes.score_delta > 0 ? '+' : ''}${qRes.score_delta.toFixed(3)} (${qRes.passed ? 'PASS' : 'FAIL'})`);
-          }
+        if (res.cost_per_1m_tokens_usd && res.x86_baseline_cost) {
+           const drop = ((res.x86_baseline_cost - res.cost_per_1m_tokens_usd) / res.x86_baseline_cost * 100);
+           setCostDrop(`-${drop.toFixed(0)}% USD`);
+        }
+      }
+      
+      if (msg.data?.quality_reports && msg.data.quality_reports.length > 0) {
+        const qRes = msg.data.quality_reports[0];
+        if (qRes.score_delta !== undefined) {
+           setQualityDelta(`${qRes.score_delta > 0 ? '+' : ''}${qRes.score_delta.toFixed(3)} (${qRes.passed ? 'PASS' : 'FAIL'})`);
         }
       }
     };
@@ -120,9 +122,15 @@ export default function CommandCenter() {
     };
   };
 
-  const calculatedMonthlySavings = ((cloudPricing.x86_cost_per_1m - cloudPricing.arm_cost_per_1m) * dailyTokens * 30).toLocaleString('en-US', {
-    maximumFractionDigits: 0
-  });
+  if (!isAuthenticated) {
+    return <LoginScreen />;
+  }
+
+  const calculatedMonthlySavings = cloudPricing?.x86_cost_per_1m && cloudPricing?.arm_cost_per_1m 
+    ? ((cloudPricing.x86_cost_per_1m - cloudPricing.arm_cost_per_1m) * dailyTokens * 30).toLocaleString('en-US', {
+        maximumFractionDigits: 0
+      })
+    : null;
 
   return (
     <main className="min-h-screen p-6 space-y-6 max-w-[1600px] mx-auto text-gray-100">
@@ -153,6 +161,12 @@ export default function CommandCenter() {
         </div>
 
         <div className="flex items-center gap-4 text-xs font-mono">
+          <button 
+            onClick={logout}
+            className="flex items-center gap-1.5 text-gray-400 hover:text-white transition px-3 py-1.5 rounded-lg border border-white/5 bg-white/5"
+          >
+            <LogOut className="w-3.5 h-3.5" /> Sign Out
+          </button>
           <div className="flex items-center gap-2 bg-black/40 px-3 py-1.5 rounded-lg border border-white/5">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             AWS Graviton4 (Neoverse V2): ONLINE
@@ -233,7 +247,7 @@ export default function CommandCenter() {
 
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={tpsHistory.length > 0 ? tpsHistory : [{ time: '0s', x86_xeon: cloudPricing?.x86_tps_baseline || 22, graviton4_spec: cloudPricing?.x86_tps_baseline || 22 }]}>
+              <LineChart data={tpsHistory.length > 0 ? tpsHistory : [{ time: '0s', x86_xeon: cloudPricing?.x86_tps_baseline, graviton4_spec: null }]}>
                 <XAxis dataKey="time" stroke="#4B5563" />
                 <YAxis stroke="#4B5563" />
                 <Tooltip contentStyle={{ background: '#12121A', borderColor: 'rgba(255,255,255,0.1)' }} />
@@ -310,16 +324,20 @@ export default function CommandCenter() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 font-mono text-center">
           <div className="bg-black/30 p-4 rounded-xl border border-white/5">
             <div className="text-xs text-gray-400 mb-1">x86 Baseline Cost / Mo</div>
-            <div className="text-xl font-bold text-red-400">${(cloudPricing.x86_cost_per_1m * dailyTokens * 30).toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+            <div className="text-xl font-bold text-red-400">
+              {cloudPricing?.x86_cost_per_1m ? `$${(cloudPricing.x86_cost_per_1m * dailyTokens * 30).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
+            </div>
           </div>
           <div className="bg-black/30 p-4 rounded-xl border border-white/5">
             <div className="text-xs text-gray-400 mb-1">InferaV22 Arm Cost / Mo</div>
-            <div className="text-xl font-bold text-emerald-400">${(cloudPricing.arm_cost_per_1m * dailyTokens * 30).toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+            <div className="text-xl font-bold text-emerald-400">
+              {cloudPricing?.arm_cost_per_1m ? `$${(cloudPricing.arm_cost_per_1m * dailyTokens * 30).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
+            </div>
           </div>
           <div className="bg-indigo-950/40 p-4 rounded-xl border border-indigo-500/30">
             <div className="text-xs text-indigo-300 mb-1">Projected Monthly Savings</div>
             <div className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-indigo-400">
-              ${calculatedMonthlySavings} / mo
+              {calculatedMonthlySavings ? `$${calculatedMonthlySavings} / mo` : '—'}
             </div>
           </div>
         </div>

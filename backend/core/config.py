@@ -29,6 +29,7 @@ class Settings(BaseModel):
     
     # Persistent Stores
     REDIS_URL: str = Field(default_factory=lambda: os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+    QUEUE_KEY: str = Field(default_factory=lambda: os.getenv("QUEUE_KEY", "inferav22:optimization:queue"))
     DATABASE_URL: str = Field(default_factory=lambda: os.getenv(
         "DATABASE_URL",
         "postgresql://inferav22:inferav22@localhost:5432/inferav22"

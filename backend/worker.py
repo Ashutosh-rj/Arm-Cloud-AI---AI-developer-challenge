@@ -12,9 +12,10 @@ logging.basicConfig(
     format='{"time": "%(asctime)s", "level": "%(levelname)s", "logger": "%(name)s", "message": "%(message)s"}'
 )
 logger = logging.getLogger("inferav22-worker")
+from core.config import settings
 
-QUEUE_KEY = "inferav22:optimization:queue"
-WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "4"))
+QUEUE_KEY = settings.QUEUE_KEY
+WORKER_CONCURRENCY = settings.WORKER_CONCURRENCY
 
 async def process_run(run_id: str):
     """Process a single optimization run."""
@@ -47,23 +48,36 @@ async def process_run(run_id: str):
 
         redis = await get_redis()
 
+        from core.events import CanonicalEvent, EventData
+        
         async for output in app_graph.astream(initial_state):
             for node_name, node_state in output.items():
                 if node_state:
+                    phase = node_state.get("phase", node_name)
                     # Persist partial state
                     await RunsRepository.update_run_state(run_id, {
                         "status": "running",
-                        "phase": node_state.get("phase", node_name),
+                        "phase": phase,
                     })
+                    
+                    event_data = EventData(
+                        benchmark_results=node_state.get("benchmark_results", []),
+                        quality_reports=node_state.get("quality_reports", []),
+                        certificate=node_state.get("certificate", None)
+                    )
+                    
+                    canonical_event = CanonicalEvent(
+                        event="node_complete",
+                        run_id=run_id,
+                        phase=phase,
+                        status="running",
+                        data=event_data
+                    )
+                    
                     # Broadcast to WebSocket subscribers via Redis pub/sub
                     await redis.publish(
                         f"run:{run_id}:events",
-                        json.dumps({
-                            "event": "node_complete",
-                            "node": node_name,
-                            "phase": node_state.get("phase", node_name),
-                            "run_id": run_id,
-                        })
+                        canonical_event.model_dump_json()
                     )
                     logger.info(f"Run {run_id}: completed node '{node_name}'")
 
@@ -74,11 +88,22 @@ async def process_run(run_id: str):
         logger.exception(f"Run {run_id} failed: {exc}")
         try:
             from db.runs_repository import RunsRepository
+            from core.events import CanonicalEvent
+            
             await RunsRepository.update_run_state(run_id, {"status": "failed"})
             redis = await get_redis()
+            
+            error_event = CanonicalEvent(
+                event="run_failed",
+                run_id=run_id,
+                phase="error",
+                status="failed",
+                error=str(exc)
+            )
+            
             await redis.publish(
                 f"run:{run_id}:events",
-                json.dumps({"event": "run_failed", "run_id": run_id, "error": str(exc)})
+                error_event.model_dump_json()
             )
         except Exception:
             pass

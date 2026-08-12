@@ -19,21 +19,44 @@ logger = logging.getLogger("inferav22-orchestrator")
 
 async def planner_agent(state: InferaV22State) -> Dict[str, Any]:
     logger.info(f"[{state['run_id']}] 1/10 Planner Agent: Decomposing strategy for {state['model_url']}")
-    plan = {
-        "tasks": [
-            "profile_hardware", "quantize_int4", "evaluate_quality_gate",
-            "run_multi_cloud_benchmarks", "evaluate_speculative_pairing",
-            "generate_helm_deployment", "verify_sla", "issue_signed_certificate"
-        ],
-        "estimated_cost_usd": 12.50,
-        "estimated_duration_minutes": 15,
-        "recommended_quantization": "Q4_K_M",
-        "architecture_notes": "SVE 256-bit accelerated INT4 superblock packing"
-    }
+    
+    from core.llm import get_llm
+    from core.state import OptimizationPlan
+    
+    try:
+        llm = get_llm()
+        structured_llm = llm.with_structured_output(OptimizationPlan)
+        
+        prompt = f"""
+        You are the Principal Planner Agent for InferaV22, an enterprise AI optimization pipeline for Arm Neoverse.
+        Analyze the model {state['model_url']} and SLA specs {state.get('sla_spec', {})} and formulate an optimization plan.
+        Target Clouds: {state.get('target_clouds')}
+        Determine the optimal task sequence, estimate the cost in USD, the duration, the recommended quantization level for Arm CPUs, and provide architecture notes.
+        """
+        
+        plan_obj = await structured_llm.ainvoke(prompt)
+        plan = plan_obj.model_dump()
+        
+        reasoning = state.get("agent_reasoning", []) or []
+        reasoning.append(f"Planner Agent reasoned: Formulated plan for {state['model_url']} targeting {plan['recommended_quantization']}")
+
+    except Exception as e:
+        logger.error(f"Planner LLM failed: {e}. Falling back to default.")
+        plan = {
+            "tasks": ["profile_hardware", "quantize_int4", "evaluate_quality_gate", "run_multi_cloud_benchmarks", "verify_sla"],
+            "estimated_cost_usd": 12.50,
+            "estimated_duration_minutes": 15,
+            "recommended_quantization": "Q4_K_M",
+            "architecture_notes": "Fallback plan due to LLM error"
+        }
+        reasoning = state.get("agent_reasoning", []) or []
+        reasoning.append(f"Planner Agent Error: {e}")
+
     return {
         "phase": "profiling",
         "plan": plan,
-        "human_approval_required": False
+        "human_approval_required": False,
+        "agent_reasoning": reasoning
     }
 
 async def profiler_agent(state: InferaV22State) -> Dict[str, Any]:
@@ -110,10 +133,35 @@ async def benchmarker_agent(state: InferaV22State) -> Dict[str, Any]:
 
 async def speculative_agent(state: InferaV22State) -> Dict[str, Any]:
     logger.info(f"[{state['run_id']}] 6/10 Speculative Agent: Orchestrating draft model pairing...")
-    spec_res = SpeculativeEngine.evaluate_speculative_pair(state["model_url"])
+    from core.llm import get_llm
+    from core.state import SpeculativeConfig
+    
+    try:
+        llm = get_llm()
+        structured_llm = llm.with_structured_output(SpeculativeConfig)
+        
+        prompt = f"""
+        You are the Speculative Decoding Agent. 
+        Target Model: {state['model_url']}
+        Determine the best smaller 'draft_model' (e.g. 1B or 3B parameters) from the same family for speculative decoding on Arm CPUs.
+        Output the projected TPS gain percentage and acceptance rate percentage based on architectural similarity.
+        """
+        spec_obj = await structured_llm.ainvoke(prompt)
+        spec_res = spec_obj.model_dump()
+        spec_res["arm_numa_pinned_draft"] = True
+        
+        reasoning = state.get("agent_reasoning", []) or []
+        reasoning.append(f"Speculative Agent reasoned: Chose draft model {spec_res['draft_model']} for target {state['model_url']}")
+    except Exception as e:
+        logger.error(f"Speculative LLM failed: {e}. Falling back to default.")
+        spec_res = SpeculativeEngine.evaluate_speculative_pair(state["model_url"])
+        reasoning = state.get("agent_reasoning", []) or []
+        reasoning.append(f"Speculative Agent Error: {e}")
+
     return {
         "phase": "deploying",
-        "speculative_config": spec_res
+        "speculative_config": spec_res,
+        "agent_reasoning": reasoning
     }
 
 async def deployer_agent(state: InferaV22State) -> Dict[str, Any]:
@@ -232,9 +280,27 @@ async def certifier_agent(state: InferaV22State) -> Dict[str, Any]:
         benchmarks=benchmarks,
         quality_delta={"score_delta": quality.get("score_delta"), "gate": "PASS" if quality.get("gate_passed") else "FAIL"}
     )
+    
+    reasoning = state.get("agent_reasoning", []) or []
+    from core.llm import get_llm
+    from pydantic import BaseModel
+    class TaglineResult(BaseModel):
+        tagline: str
+    try:
+        llm = get_llm()
+        structured_llm = llm.with_structured_output(TaglineResult)
+        prompt = f"Write a badass, highly technical 5-word tagline for an optimized AI model certification. Model: {state['model_url']}. Do not include quotes."
+        tag_obj = await structured_llm.ainvoke(prompt)
+        cert["tagline"] = tag_obj.tagline
+        reasoning.append(f"Certifier Agent reasoned: Generated custom tagline '{tag_obj.tagline}'")
+    except Exception as e:
+        logger.error(f"Certifier LLM failed: {e}")
+        reasoning.append(f"Certifier Agent Error: {e}")
+
     return {
         "phase": "monitoring",
-        "certificate": cert
+        "certificate": cert,
+        "agent_reasoning": reasoning
     }
 
 async def monitor_agent(state: InferaV22State) -> Dict[str, Any]:
