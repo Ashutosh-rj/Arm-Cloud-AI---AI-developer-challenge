@@ -4,7 +4,7 @@ langgraph==0.0.26
 langchain-core>=0.1.45,<0.2.0
 langchain-google-genai==1.0.3
 pydantic==2.6.4
-redis==5.0.3
+redis==8.1.0
 asyncpg==0.29.0
 requests==2.31.0
 python-dotenv==1.0.1
