@@ -3,7 +3,7 @@ uvicorn[standard]==0.28.0
 langgraph==0.0.26
 langchain-core>=0.1.45,<0.2.0
 langchain-google-genai==1.0.3
-pydantic==2.6.4
+pydantic==2.13.4
 redis==5.0.3
 asyncpg==0.29.0
 requests==2.31.0
